@@ -18,56 +18,22 @@ export default async function handler(request) {
     });
   }
 
-  // 2. 路径处理
+  // 2. 路径处理（完美适配有无 /api 和 /v1 的情况）
   let path = url.pathname;
   if (path.startsWith('/api')) path = path.slice(4);
   if (!path) path = '/';
   if (!path.startsWith('/v1') && path !== '/') path = '/v1' + path;
 
-  // ==========================================
-  // 🌟 魔法一：伪造模型列表 🌟
-  // 拦截 Tavo 的获取列表请求，直接返回假数据，让它乖乖加载 UI
-  if (request.method === 'GET' && path === '/v1/models') {
-    return new Response(JSON.stringify({
-      "object": "list",
-      "data": [
-        { "id": "gpt-3.5-turbo", "object": "model", "created": 1677610602, "owned_by": "openai" },
-        { "id": "gpt-4o", "object": "model", "created": 1715367049, "owned_by": "openai" },
-        { "id": "claude-3-5-sonnet", "object": "model", "created": 1718841600, "owned_by": "anthropic" }
-      ]
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
-  }
-  // ==========================================
-
   const targetUrl = `https://${ACTUAL_DOMAIN}${path}${url.search}`;
+
+  // 3. 重构请求头，伪装身份防拦截
   const newHeaders = new Headers(request.headers);
   newHeaders.set('Host', ACTUAL_DOMAIN);
   newHeaders.delete('Origin');
   newHeaders.delete('Referer');
   newHeaders.set('User-Agent', 'OpenAI/v1 PythonBindings/0.28.1');
 
-  // ==========================================
-  // 🌟 魔法二：强制篡改对话模型 🌟
-  let modifiedBody = request.body;
-  if (request.method === 'POST' && path === '/v1/chat/completions') {
-    try {
-      const clonedRequest = request.clone();
-      const bodyJson = await clonedRequest.json();
-
-      // 【极其重要】把下面引号里的 gpt-3.5-turbo 
-      // 换成你在 Chatbox 里测试成功的那个具体模型名字！
-      bodyJson.model = 'gpt-3.5-turbo';
-
-      modifiedBody = JSON.stringify(bodyJson);
-    } catch (e) {
-      // 解析失败不影响正常转发
-    }
-  }
-  // ==========================================
-
+  // 4. 组装最终请求（严格限制 GET 请求不带 body）
   const requestInit = {
     method: request.method,
     headers: newHeaders,
@@ -75,9 +41,10 @@ export default async function handler(request) {
   };
 
   if (request.method !== 'GET' && request.method !== 'HEAD') {
-    requestInit.body = modifiedBody;
+    requestInit.body = request.body; // 恢复原样透传，不再篡改你的对话内容和模型
   }
 
+  // 5. 转发并返回真实数据
   try {
     const response = await fetch(targetUrl, requestInit);
     const responseHeaders = new Headers(response.headers);
