@@ -1,51 +1,61 @@
 export const config = {
-  runtime: 'edge', // 启用 Edge 边缘节点，速度更快，语法和 Cloudflare Worker 几乎一样
+  runtime: 'edge', 
 };
 
 export default async function handler(request) {
   const url = new URL(request.url);
-  const ACTUAL_DOMAIN = 'sunlea.de'; // 你的目标公益站
+  const ACTUAL_DOMAIN = 'sunlea.de'; 
 
-  // 1. 处理 CORS 跨域预检
+  // 1. CORS 跨域放行
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
       headers: {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-requested-with',
+        'Access-Control-Allow-Methods': '*',
+        'Access-Control-Allow-Headers': '*', 
       },
     });
   }
 
-  // 2. 自动修正路径
+  // 2. 精准路径修正（适配 /models 和 /chat/completions）
   let path = url.pathname;
-  // Vercel 默认的路由会带上 /api，我们需要把它去掉，替换成 /v1
   if (path.startsWith('/api')) {
-    path = path.replace('/api', '/v1');
-  } else if (!path.startsWith('/v1') && path !== '/') {
+    path = path.slice(4); // 干净地切掉 /api
+  }
+  if (!path) path = '/';
+  
+  if (!path.startsWith('/v1') && path !== '/') {
     path = '/v1' + path;
   }
   
   const targetUrl = `https://${ACTUAL_DOMAIN}${path}${url.search}`;
 
-  // 3. 重构请求头，防止触发 WAF
+  // 3. 重构请求头
   const newHeaders = new Headers(request.headers);
   newHeaders.set('Host', ACTUAL_DOMAIN);
   newHeaders.delete('Origin');
   newHeaders.delete('Referer');
-  // 伪装成常见的 API 请求端
   newHeaders.set('User-Agent', 'OpenAI/v1 PythonBindings/0.28.1');
 
-  const modifiedRequest = new Request(targetUrl, {
+  // 【选填】如果你之前把 API Key 写死在这里了，可以保留下面这行：
+  // newHeaders.set('Authorization', 'Bearer sk-xxxxxx'); 
+
+  // 4. 【核心修复】安全构建请求参数，严防 GET 请求带 body
+  const requestInit = {
     method: request.method,
     headers: newHeaders,
-    body: request.body,
     redirect: 'follow',
-  });
+  };
+  
+  // 只有非 GET 和 HEAD 请求（比如发消息的 POST），才允许带 body
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    requestInit.body = request.body;
+  }
 
+  // 5. 转发并返回
   try {
-    const response = await fetch(modifiedRequest);
+    const response = await fetch(targetUrl, requestInit);
     const responseHeaders = new Headers(response.headers);
     responseHeaders.set('Access-Control-Allow-Origin', '*');
 
@@ -55,7 +65,7 @@ export default async function handler(request) {
       headers: responseHeaders,
     });
   } catch (error) {
-    return new Response(JSON.stringify({ error: "Vercel 代理请求失败", details: error.message }), {
+    return new Response(JSON.stringify({ error: "Vercel Proxy Error", details: error.message }), {
       status: 500,
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
     });
